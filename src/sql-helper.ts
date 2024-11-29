@@ -1,5 +1,4 @@
 import {DataQuery} from "@eventicle/eventicle-utilities/dist/datastore";
-import {isNumeric} from "tslint";
 import {logger} from "@eventicle/eventicle-utilities";
 
 export type whereQueryBuilder = (key: string, query: DataQuery) => string

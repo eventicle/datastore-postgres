@@ -5,9 +5,11 @@ import * as stackTrace from "@eventicle/eventicle-utilities/dist/stack-trace"
 import {v4 as uuidv4} from 'uuid';
 import {ds, logger, span} from "@eventicle/eventicle-utilities";
 import {getFileNameAndLineNumber, maybeRenderError} from "@eventicle/eventicle-utilities/dist/logger-util";
-import {IDatabase, IMain, ITask} from "pg-promise";
+import {IDatabase, IMain, ITask } from "pg-promise";
 import {Query} from "@eventicle/eventicle-utilities/dist/datastore";
+import * as pgp from 'pg-promise';
 
+const {TransactionMode, isolationLevel} = pgp.txMode;
 export abstract class PsqlEventDataStore<CustomError extends Error> implements ds.DataStore {
 
   events = new EventEmitter()
@@ -42,9 +44,9 @@ export abstract class PsqlEventDataStore<CustomError extends Error> implements d
     let existingId = als.get("transaction.id")
 
     if (existingId && options && options.propagation === "requires_new") {
-      logger.verbose("Ignoring existing transaction: " + existingId, {location: file})
+      logger.debug("Ignoring existing transaction: " + existingId, {location: file})
     } else if (existingId) {
-      logger.verbose("Joining existing transaction: " + existingId, {location: file})
+      logger.debug("Joining existing transaction: " + existingId, {location: file})
       return exec()
     }
 
@@ -54,39 +56,48 @@ export abstract class PsqlEventDataStore<CustomError extends Error> implements d
 
         let txId = uuidv4()
         const txData = {
-          data: {}, id: txId
+          data: {}, id: txId, task: null
         } as ds.TransactionData
+        als.set("transaction.id", txId)
+        als.set("transaction.data", txData)
+        logger.debug("Starting new TXID", txId)
 
         try {
+          const mode = new TransactionMode({
+            tiLevel: isolationLevel.serializable,
+            readOnly: false,
+            deferrable: false
+          });
+
           // http://vitaly-t.github.io/pg-promise/Task.html
-          let ret = await this.DB().tx(async task => { // task is used to ensure we stay on the same connection, not for rollback
+          let ret = await this.DB().tx({mode}, async task => { // task is used to ensure we stay on the same connection, not for rollback
             try {
+              (txData as any).task = task
               als.set("transaction", task)
-              als.set("transaction.id", txId)
-              als.set("transaction.data", txData)
-              logger.debug("Started transaction " + als.get("transaction.id"), {location: file})
+
+              logger.verbose("Started transaction " + als.get("transaction.id"), {location: file})
               this.events.emit("transaction.start", txData)
 
               try {
-                let ret = await exec().catch(reason => {
-
-                  if (this.isCustomError(reason)) {
-                    return reason as any;
-                  }
-                  throw reason
-                })
+                let ret = await exec()
                 logger.verbose("Transaction is completed and commits cleanly: " + txId, ret)
                 return ret
               } catch (e) {
+                if (this.isCustomError(e)) {
+                  return e as any;
+                }
                 logger.verbose("Transaction failed via error and rolls back: " + txId, e)
+                console.log(e)
                 throw e
               }
             } finally {
               als.set("transaction", null)
-              als.set("transaction.id", null)
-              als.set("transaction.data", null)
             }
-          }).finally(() => this.events.emit("transaction.commit", txData))
+          }).finally(() => {
+            als.set("transaction.id", null)
+            als.set("transaction.data", null)
+            this.events.emit("transaction.commit", txData)
+          })
 
           // this is treated as success to permit the transaction to commit cleanly.
           // Then, propagate as error to the api layer (assuming present)
