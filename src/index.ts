@@ -10,6 +10,21 @@ import {Query} from "@eventicle/eventicle-utilities/dist/datastore";
 import * as pgp from 'pg-promise';
 
 const {TransactionMode, isolationLevel} = pgp.txMode;
+
+function pgTransactionMode(options: ds.TransactionOptions) {
+  switch(options?.isolationLevel) {
+    case "none":
+     return isolationLevel.none;
+    case "repeatable-read":
+      return isolationLevel.repeatableRead;
+    case "serializable":
+      return isolationLevel.serializable;
+    case "read-committed":
+    default:
+      return isolationLevel.readCommitted
+  }
+}
+
 export abstract class PsqlEventDataStore<CustomError extends Error> implements ds.DataStore {
 
   events = new EventEmitter()
@@ -64,7 +79,7 @@ export abstract class PsqlEventDataStore<CustomError extends Error> implements d
 
         try {
           const mode = new TransactionMode({
-            tiLevel: isolationLevel.serializable,
+            tiLevel: pgTransactionMode(options),
             readOnly: false,
             deferrable: false
           });
